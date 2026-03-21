@@ -15,6 +15,15 @@ builder.Services.AddSingleton<IGeminiService, GeminiService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<IAnalysisService, AnalysisService>();
 
+builder.Services.AddHttpClient<ITranscriptionService, TranscriptionService>(client =>
+{
+    var baseUrl = builder.Configuration["TranscriptionService:BaseUrl"] ?? "http://localhost:8000/";
+    if (!baseUrl.EndsWith('/')) baseUrl += '/';
+    client.BaseAddress = new Uri(baseUrl);
+    client.Timeout = TimeSpan.FromSeconds(
+        builder.Configuration.GetValue<int>("TranscriptionService:TimeoutSeconds", 120));
+});
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
