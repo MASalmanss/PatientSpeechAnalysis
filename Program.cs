@@ -1,12 +1,34 @@
 using Microsoft.EntityFrameworkCore;
 using PatientSpeechAnalysis.Data;
 using PatientSpeechAnalysis.Endpoints;
+using PatientSpeechAnalysis.Middleware;
 using PatientSpeechAnalysis.Services;
+using Serilog;
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
+    .WriteTo.Console()
+    .WriteTo.File("Logs/api-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} | {Level:u3} | {SourceContext} | {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Host.UseSerilog();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowClient", policy =>
+        policy.WithOrigins("http://localhost:5173", "http://localhost:3000")
+              .AllowAnyHeader()
+              .AllowAnyMethod());
+});
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")));
@@ -30,7 +52,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
-    Console.WriteLine("[Startup] Veritabanı hazır.");
+    Log.Information("Veritabanı hazır.");
 }
 
 if (app.Environment.IsDevelopment())
@@ -39,9 +61,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors("AllowClient");
+app.UseMiddleware<RequestTimingMiddleware>();
 app.UseHttpsRedirection();
 
 app.MapAnalysisEndpoints();
 
-Console.WriteLine("[Startup] AI-Health Patient Speech Analysis API başlatıldı.");
+Log.Information("AI-Health Patient Speech Analysis API başlatıldı.");
 app.Run();

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using MailKit.Net.Smtp;
 using MimeKit;
 using PatientSpeechAnalysis.Models;
@@ -7,10 +8,12 @@ namespace PatientSpeechAnalysis.Services;
 public class EmailService : IEmailService
 {
     private readonly IConfiguration _configuration;
+    private readonly ILogger<EmailService> _logger;
 
-    public EmailService(IConfiguration configuration)
+    public EmailService(IConfiguration configuration, ILogger<EmailService> logger)
     {
         _configuration = configuration;
+        _logger = logger;
     }
 
     public async Task SendEmergencyEmailAsync(PatientAnalysis analysis)
@@ -26,15 +29,14 @@ public class EmailService : IEmailService
         if (string.IsNullOrEmpty(smtpHost) || string.IsNullOrEmpty(username) ||
             string.IsNullOrEmpty(password) || username == "TODO" || password == "TODO")
         {
-            Console.WriteLine("[EmailService] UYARI: SMTP ayarları eksik veya yapılandırılmamış. E-posta gönderilemedi.");
-            Console.WriteLine("[EmailService] Acil durum e-postası gönderilecekti:");
-            Console.WriteLine($"  Hasta #{analysis.PatientId} - {analysis.Mood}");
-            Console.WriteLine($"  Cümle: {analysis.PatientSentence}");
-            Console.WriteLine($"  Özet: {analysis.Summary}");
+            _logger.LogWarning("SMTP ayarları eksik veya yapılandırılmamış. E-posta gönderilemedi.");
+            _logger.LogWarning("Acil durum e-postası gönderilecekti: Hasta #{PatientId} - {Mood}",
+                analysis.PatientId, analysis.Mood);
             return;
         }
 
-        Console.WriteLine($"[EmailService] Acil durum e-postası gönderiliyor - Hasta #{analysis.PatientId}...");
+        _logger.LogInformation("Acil durum e-postası gönderiliyor - Hasta #{PatientId}...", analysis.PatientId);
+        var sw = Stopwatch.StartNew();
 
         try
         {
@@ -74,11 +76,14 @@ public class EmailService : IEmailService
             await client.SendAsync(message);
             await client.DisconnectAsync(true);
 
-            Console.WriteLine($"[EmailService] E-posta başarıyla gönderildi - Hasta #{analysis.PatientId}");
+            sw.Stop();
+            _logger.LogInformation("E-posta başarıyla gönderildi - Hasta #{PatientId} ({Elapsed:F3}s)",
+                analysis.PatientId, sw.Elapsed.TotalSeconds);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[EmailService] E-posta gönderim HATASI: {ex.Message}");
+            sw.Stop();
+            _logger.LogError(ex, "E-posta gönderim HATASI ({Elapsed:F3}s)", sw.Elapsed.TotalSeconds);
         }
     }
 }

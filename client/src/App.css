@@ -1,0 +1,243 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f0f2f5;
+  color: #1a1a2e;
+}
+
+.app {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+header h1 {
+  font-size: 1.8rem;
+  color: #16213e;
+}
+
+header p {
+  color: #666;
+  margin-top: 0.5rem;
+}
+
+/* Patient ID Input */
+.patient-id-input {
+  margin-bottom: 1.5rem;
+}
+
+.patient-id-input label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.patient-id-input input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.patient-id-input input:focus {
+  outline: none;
+  border-color: #0f3460;
+}
+
+/* Audio Recorder */
+.audio-recorder {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  margin-bottom: 1.5rem;
+}
+
+.status-indicator {
+  font-size: 1rem;
+  color: #666;
+  margin-bottom: 1rem;
+}
+
+.status-indicator.recording {
+  color: #e94560;
+  font-weight: 600;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.recorder-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.btn {
+  padding: 0.75rem 2rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-record {
+  background: #0f3460;
+  color: white;
+}
+
+.btn-record:hover:not(:disabled) {
+  background: #16213e;
+}
+
+.btn-stop {
+  background: #e94560;
+  color: white;
+}
+
+.btn-stop:hover {
+  background: #c23152;
+}
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 2rem;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #ddd;
+  border-top: 4px solid #0f3460;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 1rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading p {
+  color: #666;
+}
+
+/* Error */
+.error-message {
+  background: #ffeef0;
+  border: 1px solid #e94560;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  color: #c23152;
+}
+
+/* Analysis Result */
+.analysis-result {
+  margin-top: 1.5rem;
+}
+
+.analysis-result h2 {
+  font-size: 1.3rem;
+  margin-bottom: 1rem;
+  color: #16213e;
+}
+
+.result-card {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.result-row {
+  display: flex;
+  align-items: baseline;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.result-row:last-child {
+  border-bottom: none;
+}
+
+.result-row .label {
+  font-weight: 600;
+  min-width: 130px;
+  color: #444;
+}
+
+.result-row .value {
+  flex: 1;
+}
+
+.transcript {
+  font-style: italic;
+  color: #555;
+}
+
+.mood {
+  text-transform: capitalize;
+}
+
+.emergency.danger {
+  color: white;
+  background: #e94560;
+  padding: 0.2rem 0.8rem;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.emergency.safe {
+  color: #27ae60;
+  font-weight: 600;
+}
+
+.score-low {
+  color: #e94560;
+  font-weight: 700;
+}
+
+.score-mid {
+  color: #e67e22;
+  font-weight: 700;
+}
+
+.score-high {
+  color: #27ae60;
+  font-weight: 700;
+}
+
+.result-row.summary {
+  flex-direction: column;
+}
+
+.result-row.summary .value {
+  margin-top: 0.5rem;
+  line-height: 1.6;
+  color: #333;
+}

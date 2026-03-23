@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -16,8 +17,8 @@ public class TranscriptionService : ITranscriptionService
 
     public async Task<string> TranscribeAsync(byte[] audioBytes, string fileName)
     {
-        _logger.LogInformation(
-            "[TranscriptionService] Ses Python servisine gönderiliyor: {FileName} ({Bytes} byte)",
+        var sw = Stopwatch.StartNew();
+        _logger.LogInformation("Ses Python servisine gönderiliyor: {FileName} ({Bytes} byte)",
             fileName, audioBytes.Length);
 
         var ext = Path.GetExtension(fileName).ToLowerInvariant();
@@ -43,7 +44,8 @@ public class TranscriptionService : ITranscriptionService
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "[TranscriptionService] Python servisine bağlanılamadı.");
+            sw.Stop();
+            _logger.LogError(ex, "Python servisine bağlanılamadı ({Elapsed:F3}s)", sw.Elapsed.TotalSeconds);
             throw new InvalidOperationException(
                 "Ses transkripsiyon servisi erişilemiyor. Python servisinin çalıştığından emin olun.", ex);
         }
@@ -52,9 +54,9 @@ public class TranscriptionService : ITranscriptionService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError(
-                "[TranscriptionService] Python servisi hata döndürdü: {Status} - {Body}",
-                response.StatusCode, body);
+            sw.Stop();
+            _logger.LogError("Python servisi hata döndürdü: {Status} - {Body} ({Elapsed:F3}s)",
+                response.StatusCode, body, sw.Elapsed.TotalSeconds);
             throw new InvalidOperationException(
                 $"Transkripsiyon servisi hatası: {response.StatusCode} - {body}");
         }
@@ -63,7 +65,8 @@ public class TranscriptionService : ITranscriptionService
         var text = doc.RootElement.GetProperty("text").GetString()
                    ?? throw new InvalidOperationException("Transkripsiyon sonucu boş geldi.");
 
-        _logger.LogInformation("[TranscriptionService] Transkript alındı: \"{Text}\"", text);
+        sw.Stop();
+        _logger.LogInformation("Transkript alındı ({Elapsed:F3}s): \"{Text}\"", sw.Elapsed.TotalSeconds, text);
         return text;
     }
 }

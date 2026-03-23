@@ -49,3 +49,16 @@ publish/
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
+
+# Log files
+Logs/
+whisper_service/logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# React client
+client/node_modules/
+client/dist/

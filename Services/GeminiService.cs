@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using PatientSpeechAnalysis.Models;
@@ -8,9 +9,12 @@ public class GeminiService : IGeminiService
 {
     private readonly HttpClient _httpClient;
     private readonly string _model;
+    private readonly ILogger<GeminiService> _logger;
 
-    public GeminiService(IConfiguration configuration)
+    public GeminiService(IConfiguration configuration, ILogger<GeminiService> logger)
     {
+        _logger = logger;
+
         var apiKey = configuration["OpenRouter:ApiKey"]
             ?? throw new InvalidOperationException("OpenRouter API key bulunamadı. appsettings.json'da 'OpenRouter:ApiKey' ayarını kontrol edin.");
 
@@ -25,7 +29,8 @@ public class GeminiService : IGeminiService
 
     public async Task<GeminiAnalysisResult> AnalyzeAsync(string sentence)
     {
-        Console.WriteLine($"[GeminiService] Analiz başlatılıyor: \"{sentence}\"");
+        var sw = Stopwatch.StartNew();
+        _logger.LogInformation("Analiz başlatılıyor: \"{Sentence}\"", sentence);
 
         var prompt = "Sen bir sağlık asistanısın. Yaşlı bir hastadan gelen aşağıdaki cümleyi analiz et.\n\n" +
             "Hasta cümlesi: \"" + sentence + "\"\n\n" +
@@ -63,10 +68,13 @@ public class GeminiService : IGeminiService
             var json = JsonSerializer.Serialize(requestBody);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
+            var apiSw = Stopwatch.StartNew();
             var response = await _httpClient.PostAsync("chat/completions", content);
+            apiSw.Stop();
             var responseBody = await response.Content.ReadAsStringAsync();
 
-            Console.WriteLine($"[GeminiService] HTTP Status: {response.StatusCode}");
+            _logger.LogInformation("OpenRouter API çağrısı: {StatusCode} ({ApiElapsed:F3}s)",
+                response.StatusCode, apiSw.Elapsed.TotalSeconds);
 
             if (!response.IsSuccessStatusCode)
                 throw new Exception($"OpenRouter API hatası: {response.StatusCode} - {responseBody}");
@@ -79,19 +87,23 @@ public class GeminiService : IGeminiService
                 .GetString()
                 ?? throw new Exception("AI'dan boş yanıt alındı.");
 
-            Console.WriteLine($"[GeminiService] Ham yanıt: {text}");
+            _logger.LogDebug("Ham yanıt: {RawResponse}", text);
 
             var cleanedJson = CleanJsonResponse(text);
             var result = JsonSerializer.Deserialize<GeminiAnalysisResult>(cleanedJson)
                 ?? throw new Exception("AI yanıtı JSON'a dönüştürülemedi.");
 
-            Console.WriteLine($"[GeminiService] Analiz tamamlandı - Mood: {result.Mood}, Emergency: {result.IsEmergency}, Score: {result.DailyScore}");
+            sw.Stop();
+            _logger.LogInformation(
+                "Analiz tamamlandı ({Elapsed:F3}s) - Mood: {Mood}, Emergency: {IsEmergency}, Score: {DailyScore}",
+                sw.Elapsed.TotalSeconds, result.Mood, result.IsEmergency, result.DailyScore);
 
             return result;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[GeminiService] HATA: {ex.Message}");
+            sw.Stop();
+            _logger.LogError(ex, "Analiz HATA ({Elapsed:F3}s)", sw.Elapsed.TotalSeconds);
             throw;
         }
     }
