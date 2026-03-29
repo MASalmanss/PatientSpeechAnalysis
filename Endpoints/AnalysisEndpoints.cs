@@ -156,13 +156,16 @@ public static class AnalysisEndpoints
 
             using var audioBuffer = new MemoryStream();
             var recvBuffer = new byte[8192];
+            var chunkCount = 0;
+            // 0 = boşta, 1 = çalışıyor (thread-safe flag)
+            var partialInProgress = 0;
 
             while (ws.State == WebSocketState.Open)
             {
-                WebSocketReceiveResult result;
+                WebSocketReceiveResult recvResult;
                 try
                 {
-                    result = await ws.ReceiveAsync(new ArraySegment<byte>(recvBuffer), CancellationToken.None);
+                    recvResult = await ws.ReceiveAsync(new ArraySegment<byte>(recvBuffer), CancellationToken.None);
                 }
                 catch (WebSocketException ex)
                 {
@@ -170,40 +173,75 @@ public static class AnalysisEndpoints
                     return;
                 }
 
-                if (result.MessageType == WebSocketMessageType.Close)
+                if (recvResult.MessageType == WebSocketMessageType.Close)
                 {
                     await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Kapatıldı", CancellationToken.None);
                     return;
                 }
 
-                if (result.MessageType == WebSocketMessageType.Binary)
+                if (recvResult.MessageType == WebSocketMessageType.Binary)
                 {
-                    await audioBuffer.WriteAsync(recvBuffer.AsMemory(0, result.Count));
+                    await audioBuffer.WriteAsync(recvBuffer.AsMemory(0, recvResult.Count));
+                    chunkCount++;
+
+                    // Her 8 chunk'ta bir (~2s ses) kısmi transkripsiyon başlat
+                    // Önceki hâlâ çalışıyorsa atla (skip, queue değil)
+                    if (chunkCount % 8 == 0 &&
+                        Interlocked.CompareExchange(ref partialInProgress, 1, 0) == 0)
+                    {
+                        var snapshot = audioBuffer.ToArray();
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                using var partialScope = context.RequestServices.CreateScope();
+                                var partialSvc = partialScope.ServiceProvider
+                                    .GetRequiredService<ITranscriptionService>();
+                                var partialText = await partialSvc.TranscribeAsync(snapshot, "recording.webm");
+                                if (!string.IsNullOrWhiteSpace(partialText) &&
+                                    ws.State == WebSocketState.Open)
+                                {
+                                    logger.LogInformation(
+                                        "WS kısmi transkript - Hasta #{PatientId}: \"{Text}\"",
+                                        patientId, partialText);
+                                    await SendJsonAsync(ws, new { type = "partial", text = partialText });
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "WS kısmi transkripsiyon hatası - Hasta #{PatientId}", patientId);
+                            }
+                            finally
+                            {
+                                Interlocked.Exchange(ref partialInProgress, 0);
+                            }
+                        });
+                    }
                 }
-                else if (result.MessageType == WebSocketMessageType.Text)
+                else if (recvResult.MessageType == WebSocketMessageType.Text)
                 {
-                    var text = Encoding.UTF8.GetString(recvBuffer, 0, result.Count);
+                    var text = Encoding.UTF8.GetString(recvBuffer, 0, recvResult.Count);
                     if (text == "START")
-                    {
                         logger.LogInformation("WS kayıt başladı - Hasta #{PatientId}", patientId);
-                    }
                     else if (text == "END")
-                    {
                         break;
-                    }
                 }
             }
 
             if (audioBuffer.Length == 0)
             {
                 logger.LogWarning("WS boş ses - Hasta #{PatientId}", patientId);
-                await SendTextAsync(ws, "ERROR:Ses verisi alınamadı.", CancellationToken.None);
+                await SendJsonAsync(ws, new { type = "error", message = "Ses verisi alınamadı." });
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Boş ses", CancellationToken.None);
                 return;
             }
 
+            // Kısmi transkripsiyon bitene kadar bekle
+            while (Interlocked.CompareExchange(ref partialInProgress, 0, 0) == 1)
+                await Task.Delay(100);
+
             var audioBytes = audioBuffer.ToArray();
-            logger.LogInformation("WS ses alındı - Hasta #{PatientId}, {Bytes} byte", patientId, audioBytes.Length);
+            logger.LogInformation("WS ses alındı - Hasta #{PatientId}, {Bytes} byte, final analiz başlıyor", patientId, audioBytes.Length);
 
             using var scope = context.RequestServices.CreateScope();
             var transcriptionService = scope.ServiceProvider.GetRequiredService<ITranscriptionService>();
@@ -217,7 +255,7 @@ public static class AnalysisEndpoints
             catch (InvalidOperationException ex) when (ex.Message.Contains("erişilemiyor"))
             {
                 logger.LogError(ex, "WS transkripsiyon servisi çevrimdışı - Hasta #{PatientId}", patientId);
-                await SendTextAsync(ws, "ERROR:Transkripsiyon servisi erişilemiyor.", CancellationToken.None);
+                await SendJsonAsync(ws, new { type = "error", message = "Transkripsiyon servisi erişilemiyor." });
                 await ws.CloseAsync(WebSocketCloseStatus.InternalServerError, "Servis hatası", CancellationToken.None);
                 return;
             }
@@ -225,12 +263,12 @@ public static class AnalysisEndpoints
             if (string.IsNullOrWhiteSpace(transcribedText))
             {
                 logger.LogWarning("WS boş transkript - Hasta #{PatientId}", patientId);
-                await SendTextAsync(ws, "ERROR:Ses dosyasından metin çıkarılamadı.", CancellationToken.None);
+                await SendJsonAsync(ws, new { type = "error", message = "Ses dosyasından metin çıkarılamadı." });
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Boş transkript", CancellationToken.None);
                 return;
             }
 
-            logger.LogInformation("WS transkript - Hasta #{PatientId}: \"{Text}\"", patientId, transcribedText);
+            logger.LogInformation("WS final transkript - Hasta #{PatientId}: \"{Text}\"", patientId, transcribedText);
 
             PatientAnalysis analysisResult;
             try
@@ -240,20 +278,26 @@ public static class AnalysisEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "WS analiz hatası - Hasta #{PatientId}", patientId);
-                await SendTextAsync(ws, $"ERROR:Analiz hatası: {ex.Message}", CancellationToken.None);
+                await SendJsonAsync(ws, new { type = "error", message = $"Analiz hatası: {ex.Message}" });
                 await ws.CloseAsync(WebSocketCloseStatus.InternalServerError, "Analiz hatası", CancellationToken.None);
                 return;
             }
 
-            var json = JsonSerializer.Serialize(analysisResult, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-            });
-
-            await SendTextAsync(ws, json, CancellationToken.None);
+            await SendJsonAsync(ws, new { type = "result", data = analysisResult });
             logger.LogInformation("WS sonuç gönderildi - Hasta #{PatientId}, ID: {AnalysisId}", patientId, analysisResult.Id);
             await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Tamamlandı", CancellationToken.None);
         });
+    }
+
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private static Task SendJsonAsync(WebSocket ws, object obj, CancellationToken ct = default)
+    {
+        var json = JsonSerializer.Serialize(obj, _jsonOptions);
+        return SendTextAsync(ws, json, ct);
     }
 
     private static async Task SendTextAsync(WebSocket ws, string text, CancellationToken ct)

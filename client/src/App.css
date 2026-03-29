@@ -163,6 +163,35 @@ header p {
   transform: translateY(-1px);
 }
 
+/* Live Transcript */
+.live-transcript {
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  border-color: rgba(0, 212, 255, 0.25);
+}
+
+.live-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #00d4ff;
+  margin-bottom: 0.4rem;
+}
+
+.live-text {
+  color: #cce8ff;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  font-style: italic;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* Loading */
 .loading {
   text-align: center;

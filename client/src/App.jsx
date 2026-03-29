@@ -14,6 +14,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [wsStatus, setWsStatus] = useState("idle");
+  const [liveText, setLiveText] = useState("");
 
   const wsRef = useRef(null);
   const wsStatusRef = useRef("idle");
@@ -32,6 +33,7 @@ function App() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setLiveText("");
     setWsStatusSync("connecting");
 
     const ws = new WebSocket(`${WS_URL}/ws/analyze?patientId=${patientId}`);
@@ -43,24 +45,24 @@ function App() {
     };
 
     ws.onmessage = (event) => {
-      const text = event.data;
-      if (typeof text === "string") {
-        if (text.startsWith("ERROR:")) {
-          setError(text.slice(6));
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "partial") {
+          setLiveText(msg.text);
+        } else if (msg.type === "result") {
+          setResult(msg.data);
+          setLiveText("");
+          setLoading(false);
+          setWsStatusSync("done");
+        } else if (msg.type === "error") {
+          setError(msg.message);
           setLoading(false);
           setWsStatusSync("error");
-        } else {
-          try {
-            const data = JSON.parse(text);
-            setResult(data);
-            setWsStatusSync("done");
-          } catch {
-            setError("Sunucudan geçersiz yanıt alındı.");
-            setWsStatusSync("error");
-          } finally {
-            setLoading(false);
-          }
         }
+      } catch {
+        setError("Sunucudan geçersiz yanıt alındı.");
+        setLoading(false);
+        setWsStatusSync("error");
       }
     };
 
@@ -130,6 +132,13 @@ function App() {
               disabled={loading}
             />
           </div>
+
+          {liveText && (
+            <div className="glass live-transcript">
+              <p className="live-label">Canlı Transkript</p>
+              <p className="live-text">"{liveText}"</p>
+            </div>
+          )}
 
           {loading && (
             <div className="glass loading">
