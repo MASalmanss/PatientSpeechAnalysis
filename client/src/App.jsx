@@ -1,82 +1,160 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
+import DnaBackground from "./components/DnaBackground";
 import PatientIdInput from "./components/PatientIdInput";
 import AudioRecorder from "./components/AudioRecorder";
 import AnalysisResult from "./components/AnalysisResult";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5233";
+const WS_URL = API_URL.replace(/^http/, "ws");
 
 function App() {
   const [patientId, setPatientId] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [wsStatus, setWsStatus] = useState("idle");
 
-  const handleRecordingComplete = async (blob) => {
+  const wsRef = useRef(null);
+  const wsStatusRef = useRef("idle");
+
+  const setWsStatusSync = (s) => {
+    wsStatusRef.current = s;
+    setWsStatus(s);
+  };
+
+  const openWebSocket = () => {
     if (!patientId || parseInt(patientId) <= 0) {
       setError("Lütfen geçerli bir Hasta ID girin.");
-      return;
+      return false;
     }
 
     setLoading(true);
     setError(null);
     setResult(null);
+    setWsStatusSync("connecting");
 
-    const formData = new FormData();
-    formData.append("patientId", patientId);
-    formData.append("audio", blob, "recording.webm");
+    const ws = new WebSocket(`${WS_URL}/ws/analyze?patientId=${patientId}`);
+    ws.binaryType = "arraybuffer";
 
-    try {
-      const response = await fetch(`${API_URL}/api/analyze/audio`, {
-        method: "POST",
-        body: formData,
-      });
+    ws.onopen = () => {
+      setWsStatusSync("connected");
+      ws.send("START");
+    };
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error || "Bir hata oluştu.");
-        return;
+    ws.onmessage = (event) => {
+      const text = event.data;
+      if (typeof text === "string") {
+        if (text.startsWith("ERROR:")) {
+          setError(text.slice(6));
+          setLoading(false);
+          setWsStatusSync("error");
+        } else {
+          try {
+            const data = JSON.parse(text);
+            setResult(data);
+            setWsStatusSync("done");
+          } catch {
+            setError("Sunucudan geçersiz yanıt alındı.");
+            setWsStatusSync("error");
+          } finally {
+            setLoading(false);
+          }
+        }
       }
+    };
 
-      setResult(data);
-    } catch (err) {
-      setError("Sunucuya bağlanılamadı. API'nin çalıştığından emin olun.");
-    } finally {
+    ws.onerror = () => {
+      setError("WebSocket bağlantı hatası. Sunucuya ulaşılamıyor.");
       setLoading(false);
+      setWsStatusSync("error");
+    };
+
+    ws.onclose = (event) => {
+      wsRef.current = null;
+      if (wsStatusRef.current !== "done" && wsStatusRef.current !== "error") {
+        if (!event.wasClean) {
+          setError("Bağlantı beklenmedik şekilde kapandı.");
+          setLoading(false);
+          setWsStatusSync("error");
+        }
+      }
+    };
+
+    wsRef.current = ws;
+    return true;
+  };
+
+  const handleChunk = (arrayBuffer) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(arrayBuffer);
     }
   };
 
+  const handleStop = (micError) => {
+    if (micError) {
+      setError(micError);
+      setLoading(false);
+      setWsStatusSync("error");
+      wsRef.current?.close();
+      return;
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send("END");
+      setWsStatusSync("processing");
+    }
+  };
+
+  const loadingMessage =
+    wsStatus === "connecting" ? "Bağlanıyor..." :
+    wsStatus === "connected" ? "Kayıt aktarılıyor..." :
+    "Transkripsiyon ve analiz ediliyor...";
+
   return (
-    <div className="app">
-      <header>
-        <h1>Hasta Konuşma Analizi</h1>
-        <p>Sesli mesajınızı kaydedin, AI analiz etsin.</p>
-      </header>
+    <>
+      <DnaBackground />
+      <div className="app">
+        <div className="app-content">
+          <header>
+            <h1>Hasta Konuşma Analizi</h1>
+            <p>Sesli mesajınızı kaydedin, AI analiz etsin.</p>
+          </header>
 
-      <main>
-        <PatientIdInput value={patientId} onChange={setPatientId} />
-        <AudioRecorder
-          onRecordingComplete={handleRecordingComplete}
-          disabled={loading}
-        />
+          <PatientIdInput value={patientId} onChange={setPatientId} />
 
-        {loading && (
-          <div className="loading">
-            <div className="spinner"></div>
-            <p>Analiz ediliyor... Bu işlem biraz zaman alabilir.</p>
+          <div className="glass audio-recorder">
+            <AudioRecorder
+              onStartRecording={openWebSocket}
+              onChunk={handleChunk}
+              onStop={handleStop}
+              disabled={loading}
+            />
           </div>
-        )}
 
-        {error && (
-          <div className="error-message">
-            <p>{error}</p>
-          </div>
-        )}
+          {loading && (
+            <div className="glass loading">
+              <div className="spinner"></div>
+              <p>{loadingMessage}</p>
+            </div>
+          )}
 
-        <AnalysisResult result={result} />
-      </main>
-    </div>
+          {error && (
+            <div className="error-message">
+              <p>{error}</p>
+            </div>
+          )}
+
+          {result && (
+            <div className="analysis-result">
+              <h2>Analiz Sonucu</h2>
+              <div className="glass result-card">
+                <AnalysisResult result={result} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 

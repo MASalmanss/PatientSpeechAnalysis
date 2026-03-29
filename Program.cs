@@ -27,7 +27,8 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowClient", policy =>
         policy.WithOrigins("http://localhost:5173", "http://localhost:3000")
               .AllowAnyHeader()
-              .AllowAnyMethod());
+              .AllowAnyMethod()
+              .AllowCredentials());
 });
 
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -62,6 +63,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowClient");
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 app.UseMiddleware<RequestTimingMiddleware>();
 app.UseHttpsRedirection();
 
