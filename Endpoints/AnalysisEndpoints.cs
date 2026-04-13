@@ -287,6 +287,42 @@ public static class AnalysisEndpoints
             logger.LogInformation("WS sonuç gönderildi - Hasta #{PatientId}, ID: {AnalysisId}", patientId, analysisResult.Id);
             await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Tamamlandı", CancellationToken.None);
         });
+
+        app.MapPost("/api/tts", async (TtsRequest request, ITtsService ttsService) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Text))
+            {
+                logger.LogWarning("TTS isteği boş metin içeriyor.");
+                return Results.BadRequest(new { error = "Metin boş olamaz." });
+            }
+
+            try
+            {
+                logger.LogInformation("TTS isteği - {CharCount} karakter", request.Text.Length);
+                var audioBytes = await ttsService.SynthesizeAsync(request.Text);
+                return Results.File(audioBytes, "audio/wav");
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("erişilemiyor"))
+            {
+                logger.LogError(ex, "TTS servisi çevrimdışı.");
+                return Results.Json(
+                    new { error = "TTS servisi şu an erişilemiyor.", detail = ex.Message },
+                    statusCode: 503);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "TTS hatası");
+                return Results.Json(
+                    new { error = "Ses sentezi sırasında bir hata oluştu.", detail = ex.Message },
+                    statusCode: 500);
+            }
+        })
+        .WithName("TextToSpeech")
+        .WithOpenApi()
+        .Produces(200)
+        .Produces(400)
+        .Produces(503)
+        .Produces(500);
     }
 
     private static readonly JsonSerializerOptions _jsonOptions = new()

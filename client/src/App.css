@@ -307,6 +307,37 @@ header p {
   flex-direction: column;
 }
 
+/* TTS - Dinle butonu */
+.tts-row {
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btn-listen {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5);
+  color: white;
+  padding: 0.55rem 1.5rem;
+  font-size: 0.88rem;
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.3);
+}
+
+.btn-listen:hover:not(:disabled) {
+  box-shadow: 0 0 26px rgba(124, 58, 237, 0.55);
+  transform: translateY(-1px);
+}
+
+.btn-listen--playing {
+  background: linear-gradient(135deg, #475569, #334155);
+  box-shadow: 0 0 16px rgba(71, 85, 105, 0.3);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.tts-error {
+  font-size: 0.82rem;
+  color: #ff7aaa;
+}
+
 .result-row.summary .value {
   margin-top: 0.5rem;
   line-height: 1.65;
