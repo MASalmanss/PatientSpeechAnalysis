@@ -38,6 +38,7 @@ artifacts/
 # Sensitive configuration (API keys, SMTP credentials)
 appsettings.Production.json
 appsettings.Local.json
+appsettings.Development.json
 
 # OS files
 .DS_Store
