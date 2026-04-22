@@ -1,0 +1,60 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: psa-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Management UI (http://localhost:15672 — guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  whisper-worker:
+    build:
+      context: ./whisper_service
+    pull_policy: never
+    container_name: psa-whisper-worker
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      WHISPER_QUEUE: whisper.requests
+      WHISPER_MODEL: large-v3
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE: int8
+    volumes:
+      # Modeli host'ta cache'le, image küçük kalsın
+      - whisper_models:/root/.cache/huggingface
+
+  tts-worker:
+    build:
+      context: ./tts_service
+    container_name: psa-tts-worker
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      TTS_QUEUE: tts.requests
+      TTS_MODEL: tts_models/tr/common-voice/glow-tts
+    volumes:
+      - tts_models:/root/.local/share/tts
+
+volumes:
+  rabbitmq_data:
+  whisper_models:
+  tts_models:

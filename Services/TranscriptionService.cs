@@ -1,70 +1,74 @@
 using System.Diagnostics;
-using System.Net.Http.Headers;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
+using PatientSpeechAnalysis.Messaging;
 
 namespace PatientSpeechAnalysis.Services;
 
 public class TranscriptionService : ITranscriptionService
 {
-    private readonly HttpClient _httpClient;
+    private readonly IRabbitMqRpcClient _rpc;
+    private readonly RabbitMqOptions _options;
     private readonly ILogger<TranscriptionService> _logger;
 
-    public TranscriptionService(HttpClient httpClient, ILogger<TranscriptionService> logger)
+    public TranscriptionService(
+        IRabbitMqRpcClient rpc,
+        IOptions<RabbitMqOptions> options,
+        ILogger<TranscriptionService> logger)
     {
-        _httpClient = httpClient;
+        _rpc = rpc;
+        _options = options.Value;
         _logger = logger;
     }
 
     public async Task<string> TranscribeAsync(byte[] audioBytes, string fileName)
     {
         var sw = Stopwatch.StartNew();
-        _logger.LogInformation("Ses Python servisine gönderiliyor: {FileName} ({Bytes} byte)",
+        _logger.LogInformation("Ses kuyruğa gönderiliyor (RabbitMQ): {FileName} ({Bytes} byte)",
             fileName, audioBytes.Length);
 
-        var ext = Path.GetExtension(fileName).ToLowerInvariant();
-        var mime = ext switch
+        var headers = new Dictionary<string, object?>
         {
-            ".wav"  => "audio/wav",
-            ".mp3"  => "audio/mpeg",
-            ".m4a"  => "audio/mp4",
-            ".ogg"  => "audio/ogg",
-            ".webm" => "audio/webm",
-            _       => "application/octet-stream"
+            ["x-filename"] = fileName ?? "audio.webm"
         };
 
-        using var form = new MultipartFormDataContent();
-        var fileContent = new ByteArrayContent(audioBytes);
-        fileContent.Headers.ContentType = new MediaTypeHeaderValue(mime);
-        form.Add(fileContent, "audio", fileName);
-
-        HttpResponseMessage response;
+        RpcResponse response;
         try
         {
-            response = await _httpClient.PostAsync("transcribe", form);
+            response = await _rpc.CallAsync(
+                queue: _options.WhisperQueue,
+                body: audioBytes,
+                headers: headers,
+                contentType: "application/octet-stream");
         }
-        catch (HttpRequestException ex)
+        catch (TimeoutException ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "Python servisine bağlanılamadı ({Elapsed:F3}s)", sw.Elapsed.TotalSeconds);
+            _logger.LogError(ex, "Whisper RPC timeout ({Elapsed:F3}s)", sw.Elapsed.TotalSeconds);
             throw new InvalidOperationException(
-                "Ses transkripsiyon servisi erişilemiyor. Python servisinin çalıştığından emin olun.", ex);
+                "Ses transkripsiyon servisi erişilemiyor (timeout). Worker çalışıyor mu?", ex);
         }
-
-        var body = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
+        catch (Exception ex) when (ex is not InvalidOperationException)
         {
             sw.Stop();
-            _logger.LogError("Python servisi hata döndürdü: {Status} - {Body} ({Elapsed:F3}s)",
-                response.StatusCode, body, sw.Elapsed.TotalSeconds);
+            _logger.LogError(ex, "Whisper RPC hatası ({Elapsed:F3}s)", sw.Elapsed.TotalSeconds);
             throw new InvalidOperationException(
-                $"Transkripsiyon servisi hatası: {response.StatusCode} - {body}");
+                "Ses transkripsiyon servisine erişilemiyor.", ex);
         }
 
-        using var doc = JsonDocument.Parse(body);
-        var text = doc.RootElement.GetProperty("text").GetString()
-                   ?? throw new InvalidOperationException("Transkripsiyon sonucu boş geldi.");
+        // Worker JSON döndürüyor: {ok:true, result:{text,...}} veya {ok:false, error:"..."}
+        using var doc = JsonDocument.Parse(response.Body);
+        var root = doc.RootElement;
 
+        if (!root.TryGetProperty("ok", out var okEl) || !okEl.GetBoolean())
+        {
+            var err = root.TryGetProperty("error", out var e) ? e.GetString() : "bilinmeyen hata";
+            sw.Stop();
+            _logger.LogError("Worker hata döndürdü: {Error} ({Elapsed:F3}s)", err, sw.Elapsed.TotalSeconds);
+            throw new InvalidOperationException($"Transkripsiyon hatası: {err}");
+        }
+
+        var text = root.GetProperty("result").GetProperty("text").GetString() ?? "";
         sw.Stop();
         _logger.LogInformation("Transkript alındı ({Elapsed:F3}s): \"{Text}\"", sw.Elapsed.TotalSeconds, text);
         return text;
