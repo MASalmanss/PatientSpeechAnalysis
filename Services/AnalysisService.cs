@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using PatientSpeechAnalysis.Data;
 using PatientSpeechAnalysis.Messaging;
@@ -56,6 +57,11 @@ public class AnalysisService : IAnalysisService
             CreatedAt = DateTime.UtcNow
         };
 
+        // Semptom geçmişi kontrolü (senkron — uyarı sonuca eklenir)
+        analysis.SymptomWarning = await CheckSymptomHistoryAsync(patientId, analysis.Mood, analysis.Summary);
+        if (analysis.SymptomWarning is not null)
+            _logger.LogWarning("Semptom geçmişi uyarısı - Hasta #{PatientId}: {Warning}", patientId, analysis.SymptomWarning);
+
         _dbContext.PatientAnalyses.Add(analysis);
         await _dbContext.SaveChangesAsync();
         _logger.LogInformation("Analiz DB'ye kaydedildi - ID: {AnalysisId}", analysis.Id);
@@ -72,6 +78,37 @@ public class AnalysisService : IAnalysisService
         sw.Stop();
         _logger.LogInformation("Hasta #{PatientId} analizi tamamlandı ({Elapsed:F3}s)", patientId, sw.Elapsed.TotalSeconds);
         return analysis;
+    }
+
+    private async Task<string?> CheckSymptomHistoryAsync(int patientId, string mood, string summary)
+    {
+        try
+        {
+            var payload = new { patientId, mood, summary };
+            var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, _jsonOptions));
+
+            var response = await _rabbitMq.CallAsync(
+                queue: _mqOptions.SymptomQueue,
+                body: body,
+                contentType: "application/json",
+                timeout: TimeSpan.FromSeconds(10));
+
+            var json = JsonDocument.Parse(response.Body);
+            var root = json.RootElement;
+
+            if (root.TryGetProperty("hasWarning", out var hw) && hw.GetBoolean())
+                return root.TryGetProperty("warning", out var w) ? w.GetString() : null;
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Semptom servisi zaman aşımına uğradı - Hasta #{PatientId}", patientId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Semptom kontrolü başarısız - Hasta #{PatientId}", patientId);
+        }
+
+        return null;
     }
 
     private async Task PublishReportAsync(PatientAnalysis analysis)

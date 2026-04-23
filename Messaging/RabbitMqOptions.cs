@@ -9,5 +9,6 @@ public class RabbitMqOptions
     public string WhisperQueue { get; set; } = "whisper.requests";
     public string TtsQueue { get; set; } = "tts.requests";
     public string ReportQueue { get; set; } = "report.requests";
+    public string SymptomQueue { get; set; } = "symptom.check";
     public int RpcTimeoutSeconds { get; set; } = 120;
 }

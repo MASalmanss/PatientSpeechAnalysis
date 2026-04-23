@@ -54,6 +54,25 @@ services:
     volumes:
       - tts_models:/root/.local/share/tts
 
+  symptom-worker:
+    build:
+      context: ./symptom_service
+    container_name: psa-symptom-worker
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      SYMPTOM_QUEUE: symptom.check
+      SIMILARITY_THRESHOLD: "0.25"
+      LOOKBACK_DAYS: "0"
+    volumes:
+      - symptom_data:/data
+
   report-worker:
     build:
       context: ./report_service
@@ -81,3 +100,4 @@ volumes:
   rabbitmq_data:
   whisper_models:
   tts_models:
+  symptom_data:

@@ -10,4 +10,8 @@ public class PatientAnalysis
     public string Summary { get; set; } = string.Empty;
     public int DailyScore { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>
+    /// Geçmiş semptom benzerliği tespit edilirse dolu gelir. Yoksa null.
+    /// </summary>
+    public string? SymptomWarning { get; set; }
 }
