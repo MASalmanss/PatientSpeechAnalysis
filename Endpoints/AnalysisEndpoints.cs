@@ -13,6 +13,7 @@ public static class AnalysisEndpoints
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("AnalysisEndpoints");
 
         app.MapPost("/api/analyze", async (AnalysisRequest request, IAnalysisService analysisService) =>
+
         {
             if (string.IsNullOrWhiteSpace(request.Sentence))
             {
@@ -42,7 +43,8 @@ public static class AnalysisEndpoints
         .WithOpenApi()
         .Produces<PatientAnalysis>(200)
         .Produces(400)
-        .Produces(500);
+        .Produces(500)
+        .RequireAuthorization();
 
         app.MapPost("/api/analyze/audio", async (
             HttpRequest httpRequest,
@@ -131,10 +133,20 @@ public static class AnalysisEndpoints
         .Produces(400)
         .Produces(422)
         .Produces(503)
-        .Produces(500);
+        .Produces(500)
+        .RequireAuthorization();
 
         app.Map("/ws/analyze", async (HttpContext context) =>
         {
+            // JWT: WebSocket üzerinden token query param ile gelir (?token=...)
+            // UseAuthentication middleware zaten JwtBearerEvents.OnMessageReceived'de yakalar.
+            if (context.User.Identity?.IsAuthenticated != true)
+            {
+                context.Response.StatusCode = 401;
+                await context.Response.WriteAsync("{\"error\":\"Yetkisiz erişim.\"}");
+                return;
+            }
+
             if (!context.WebSockets.IsWebSocketRequest)
             {
                 context.Response.StatusCode = 400;
@@ -322,7 +334,8 @@ public static class AnalysisEndpoints
         .Produces(200)
         .Produces(400)
         .Produces(503)
-        .Produces(500);
+        .Produces(500)
+        .RequireAuthorization();
     }
 
     private static readonly JsonSerializerOptions _jsonOptions = new()

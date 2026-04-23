@@ -8,5 +8,6 @@ public class RabbitMqOptions
     public string Password { get; set; } = "guest";
     public string WhisperQueue { get; set; } = "whisper.requests";
     public string TtsQueue { get; set; } = "tts.requests";
+    public string ReportQueue { get; set; } = "report.requests";
     public int RpcTimeoutSeconds { get; set; } = 120;
 }

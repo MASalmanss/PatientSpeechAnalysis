@@ -13,6 +13,16 @@ public interface IRabbitMqRpcClient
         string? contentType = null,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Verilen kuyruğa yanıt beklemeden (fire-and-forget) mesaj yayınlar.
+    /// </summary>
+    Task PublishAsync(
+        string queue,
+        byte[] body,
+        IDictionary<string, object?>? headers = null,
+        string? contentType = null,
+        CancellationToken cancellationToken = default);
 }
 
 public record RpcResponse(byte[] Body, string? ContentType);

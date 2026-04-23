@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5233";
 
-export default function AnalysisResult({ result }) {
+export default function AnalysisResult({ result, authFetch }) {
   if (!result) return null;
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -24,7 +24,8 @@ export default function AnalysisResult({ result }) {
     setTtsLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/api/tts`, {
+      const fetchFn = authFetch ?? fetch;
+      const response = await fetchFn(`${API_URL}/api/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: result.summary }),

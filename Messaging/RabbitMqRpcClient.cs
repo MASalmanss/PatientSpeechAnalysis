@@ -166,6 +166,39 @@ public sealed class RabbitMqRpcClient : IRabbitMqRpcClient, IAsyncDisposable
         }
     }
 
+    public async Task PublishAsync(
+        string queue,
+        byte[] body,
+        IDictionary<string, object?>? headers = null,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await EnsureInitializedAsync(cancellationToken);
+
+        var props = new BasicProperties { ContentType = contentType };
+        if (headers is not null && headers.Count > 0)
+            props.Headers = new Dictionary<string, object?>(headers);
+
+        await _publishLock.WaitAsync(cancellationToken);
+        try
+        {
+            await _channel!.BasicPublishAsync(
+                exchange: "",
+                routingKey: queue,
+                mandatory: false,
+                basicProperties: props,
+                body: body,
+                cancellationToken: cancellationToken);
+
+            _logger.LogDebug("Mesaj yayınlandı → kuyruk: {Queue}, {Bytes} byte", queue, body.Length);
+        }
+        finally
+        {
+            _publishLock.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;

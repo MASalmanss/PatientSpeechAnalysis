@@ -54,6 +54,29 @@ services:
     volumes:
       - tts_models:/root/.local/share/tts
 
+  report-worker:
+    build:
+      context: ./report_service
+    container_name: psa-report-worker
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      REPORT_QUEUE: report.requests
+      # SMTP — kendi değerlerinizi girin veya .env dosyası kullanın
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: "587"
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      SMTP_FROM: ""
+      SMTP_TO: ""
+      SMTP_CC: ""
+
 volumes:
   rabbitmq_data:
   whisper_models:
