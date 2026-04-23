@@ -44,7 +44,13 @@ public class AnalysisService : IAnalysisService
         var sw = Stopwatch.StartNew();
         _logger.LogInformation("Hasta #{PatientId} için analiz başlatılıyor...", patientId);
 
-        var geminiResult = await _geminiService.AnalyzeAsync(sentence);
+        // İki Gemini çağrısı paralel — toplam süreyi artırmaz
+        var analyzeTask = _geminiService.AnalyzeAsync(sentence);
+        var extractTask = _geminiService.ExtractSymptomsAsync(sentence);
+        await Task.WhenAll(analyzeTask, extractTask);
+
+        var geminiResult = analyzeTask.Result;
+        var symptoms    = extractTask.Result;
 
         var analysis = new PatientAnalysis
         {
@@ -58,7 +64,7 @@ public class AnalysisService : IAnalysisService
         };
 
         // Semptom geçmişi kontrolü (senkron — uyarı sonuca eklenir)
-        analysis.SymptomWarning = await CheckSymptomHistoryAsync(patientId, analysis.Mood, analysis.Summary);
+        analysis.SymptomWarning = await CheckSymptomHistoryAsync(patientId, symptoms);
         if (analysis.SymptomWarning is not null)
             _logger.LogWarning("Semptom geçmişi uyarısı - Hasta #{PatientId}: {Warning}", patientId, analysis.SymptomWarning);
 
@@ -80,11 +86,35 @@ public class AnalysisService : IAnalysisService
         return analysis;
     }
 
-    private async Task<string?> CheckSymptomHistoryAsync(int patientId, string mood, string summary)
+    private async Task<string?> CheckSymptomHistoryAsync(int patientId, SymptomExtractionResult symptoms)
     {
+        if (symptoms.Semptomlar.Count == 0)
+        {
+            _logger.LogInformation("Semptom bulunamadı, geçmiş kontrolü atlandı - Hasta #{PatientId}", patientId);
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Semptom geçmişi kontrol ediliyor - Hasta #{PatientId}, {Count} semptom: {Keys}",
+            patientId, symptoms.Semptomlar.Count,
+            string.Join(", ", symptoms.Semptomlar.Select(s => s.CanonicalKey)));
+
         try
         {
-            var payload = new { patientId, mood, summary };
+            var payload = new
+            {
+                patientId,
+                symptoms = symptoms.Semptomlar.Select(s => new
+                {
+                    canonicalKey          = s.CanonicalKey,
+                    semptom               = s.Semptom,
+                    zaman                 = s.Zaman,
+                    siklik                = s.Siklik,
+                    siddetSeyri           = s.SiddetSeyri,
+                    tetikleyiciAzaltan    = s.TetikleyiciAzaltan
+                }),
+                analyzedAt = DateTime.UtcNow.ToString("o")
+            };
             var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, _jsonOptions));
 
             var response = await _rabbitMq.CallAsync(

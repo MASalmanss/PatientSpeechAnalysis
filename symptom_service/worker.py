@@ -1,17 +1,17 @@
 """
 Symptom History Worker
 ======================
-Hasta semptom geçmişini yönetir.
-- .NET'ten gelen analizi kendi SQLite DB'sine kaydeder
-- Aynı hasta için benzer geçmiş semptom varsa uyarı döner
+Hasta semptom geçmişini canonical key bazında yönetir.
+- .NET'ten yapılandırılmış semptom listesi (canonical_key dahil) alır
+- Aynı hasta + aynı canonical_key geçmişte varsa uyarı döner
+- Her durumda yeni semptomları kendi SQLite DB'sine kaydeder
 - İletişim: RabbitMQ RPC (direct reply-to)
-- Bağımlılık: sadece pika (stdlib: sqlite3, json, logging, os, time, re)
+- Bağımlılık: sadece pika (stdlib: sqlite3, json, logging, os, time)
 """
 
 import json
 import logging
 import os
-import re
 import sqlite3
 import time
 
@@ -27,27 +27,12 @@ logging.basicConfig(
 logger = logging.getLogger("symptom-worker")
 
 # ── Config ───────────────────────────────────────────────────────────────────
-RABBITMQ_HOST  = os.getenv("RABBITMQ_HOST", "localhost")
-RABBITMQ_PORT  = int(os.getenv("RABBITMQ_PORT", "5672"))
-RABBITMQ_USER  = os.getenv("RABBITMQ_USER", "guest")
-RABBITMQ_PASS  = os.getenv("RABBITMQ_PASS", "guest")
-SYMPTOM_QUEUE  = os.getenv("SYMPTOM_QUEUE", "symptom.check")
-DB_PATH        = os.getenv("DB_PATH", "/data/symptom_history.db")
-
-# Benzerlik eşiği: summary'deki kelimelerin kaçta kaçı eşleşirse benzer sayılır
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.25"))
-
-# Kaç günlük geçmişe bakılsın (0 = sınırsız)
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "0"))
-
-# Filtrelenen anlamsız kelimeler (Türkçe + İngilizce temel stop words)
-STOP_WORDS = {
-    "ve", "veya", "ile", "bu", "bir", "için", "de", "da", "ki",
-    "çok", "daha", "olan", "olan", "gibi", "ama", "fakat", "ancak",
-    "the", "and", "or", "is", "are", "was", "were", "a", "an",
-    "in", "on", "at", "to", "for", "of", "with", "has", "have",
-    "that", "this", "it", "be", "been", "being",
-}
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
+RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
+RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
+SYMPTOM_QUEUE = os.getenv("SYMPTOM_QUEUE", "symptom.check")
+DB_PATH       = os.getenv("DB_PATH", "/data/symptom_history.db")
 
 
 # ── Veritabanı ───────────────────────────────────────────────────────────────
@@ -60,178 +45,154 @@ def get_db() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """DB'yi oluştur. Eski Jaccard tablosu varsa migrate et."""
     with get_db() as conn:
+        # Eski şema kontrolü: keywords kolonu varsa eski tablodur, drop et
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(symptom_history)")}
+        if cols and "keywords" in cols:
+            logger.warning("Eski şema tespit edildi (Jaccard tablosu). Yeniden oluşturuluyor...")
+            conn.execute("DROP TABLE symptom_history")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS symptom_history (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                patient_id  INTEGER NOT NULL,
-                mood        TEXT NOT NULL,
-                keywords    TEXT NOT NULL,   -- virgülle ayrılmış anahtar kelimeler
-                summary     TEXT NOT NULL,
-                analyzed_at TEXT NOT NULL    -- ISO 8601
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id    INTEGER NOT NULL,
+                canonical_key TEXT NOT NULL,
+                semptom       TEXT NOT NULL,
+                zaman         TEXT,
+                siklik        TEXT,
+                siddet_seyri  TEXT,
+                tetikleyici   TEXT,        -- JSON array
+                analyzed_at   TEXT NOT NULL
             )
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_patient_id
-            ON symptom_history (patient_id)
+            CREATE INDEX IF NOT EXISTS idx_patient_canonical
+            ON symptom_history (patient_id, canonical_key)
         """)
     logger.info("DB hazır: %s", DB_PATH)
 
 
-# ── Benzerlik ────────────────────────────────────────────────────────────────
+# ── İş mantığı ───────────────────────────────────────────────────────────────
 
-def extract_keywords(text: str) -> set[str]:
-    """Metinden anlamlı kelimeleri çıkar (küçük harf, noktalama temizle)."""
-    words = re.findall(r"\b[a-zA-ZçğıöşüÇĞİÖŞÜ]{3,}\b", text.lower())
-    return {w for w in words if w not in STOP_WORDS}
-
-
-def jaccard_similarity(set_a: set, set_b: set) -> float:
-    """İki küme arasındaki Jaccard benzerliği."""
-    if not set_a or not set_b:
-        return 0.0
-    intersection = len(set_a & set_b)
-    union = len(set_a | set_b)
-    return intersection / union
-
-
-def find_similar(conn: sqlite3.Connection, patient_id: int, mood: str, keywords: set[str]) -> dict | None:
+def find_matches(conn: sqlite3.Connection, patient_id: int, canonical_keys: list[str]) -> list[dict]:
     """
-    Aynı hastanın geçmiş kayıtlarında benzer semptom ara.
-    Öncelik sırası:
-      1. Hem mood hem keyword benzerliği yüksek
-      2. Sadece mood eşleşmesi
-    En yakın eşleşmeyi döner, bulamazsa None.
+    Gelen canonical key'lerin her biri için hastanın geçmişinde eşleşme ara.
+    En son kaydı döner.
     """
-    query = "SELECT * FROM symptom_history WHERE patient_id = ?"
-    params: list = [patient_id]
-
-    if LOOKBACK_DAYS > 0:
-        query += " AND analyzed_at >= datetime('now', ?)"
-        params.append(f"-{LOOKBACK_DAYS} days")
-
-    query += " ORDER BY analyzed_at DESC"
-
-    rows = conn.execute(query, params).fetchall()
-    if not rows:
-        return None
-
-    best_match = None
-    best_score = 0.0
-
-    for row in rows:
-        past_keywords = set(row["keywords"].split(",")) if row["keywords"] else set()
-        kw_sim = jaccard_similarity(keywords, past_keywords)
-        mood_match = row["mood"].lower() == mood.lower()
-
-        # Toplam skor: keyword benzerliği ağırlıklı + mood bonusu
-        score = kw_sim + (0.3 if mood_match else 0)
-
-        if score > best_score:
-            best_score = score
-            best_match = dict(row)
-            best_match["_score"] = score
-            best_match["_mood_match"] = mood_match
-            best_match["_kw_sim"] = kw_sim
-
-    if best_match is None:
-        return None
-
-    # Eşik: ya keyword benzerliği yeterli ya da mood birebir aynı
-    kw_sim = best_match["_kw_sim"]
-    mood_match = best_match["_mood_match"]
-
-    if kw_sim >= SIMILARITY_THRESHOLD or mood_match:
-        return best_match
-
-    return None
+    matches = []
+    for key in canonical_keys:
+        row = conn.execute(
+            """SELECT * FROM symptom_history
+               WHERE patient_id = ? AND canonical_key = ?
+               ORDER BY analyzed_at DESC LIMIT 1""",
+            (patient_id, key),
+        ).fetchone()
+        if row:
+            matches.append(dict(row))
+    return matches
 
 
-def save_record(conn: sqlite3.Connection, patient_id: int, mood: str,
-                keywords: set[str], summary: str, analyzed_at: str) -> None:
-    conn.execute(
-        """INSERT INTO symptom_history (patient_id, mood, keywords, summary, analyzed_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (patient_id, mood, ",".join(sorted(keywords)), summary, analyzed_at),
-    )
+def save_symptoms(conn: sqlite3.Connection, patient_id: int, symptoms: list[dict], analyzed_at: str) -> None:
+    for s in symptoms:
+        tetikleyici = json.dumps(s.get("tetikleyiciAzaltan") or [], ensure_ascii=False)
+        conn.execute(
+            """INSERT INTO symptom_history
+               (patient_id, canonical_key, semptom, zaman, siklik, siddet_seyri, tetikleyici, analyzed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                patient_id,
+                s.get("canonicalKey", ""),
+                s.get("semptom", ""),
+                s.get("zaman"),
+                s.get("siklik"),
+                s.get("siddetSeyri"),
+                tetikleyici,
+                analyzed_at,
+            ),
+        )
     conn.commit()
 
 
-# ── İş mantığı ───────────────────────────────────────────────────────────────
+def build_warning(matches: list[dict]) -> str:
+    """Eşleşen semptomlardan okunabilir uyarı metni üret."""
+    if len(matches) == 1:
+        m = matches[0]
+        date_str = m["analyzed_at"][:10]
+        return (
+            f"Bu hasta {date_str} tarihinde '{m['semptom'].replace('_', ' ')}' "
+            f"şikayetiyle başvurmuştu. Lütfen semptom seyrini takip edin."
+        )
+
+    # Birden fazla eşleşme
+    semptom_listesi = ", ".join(
+        f"'{m['semptom'].replace('_', ' ')}' ({m['analyzed_at'][:10]})"
+        for m in matches
+    )
+    return (
+        f"Bu hasta geçmişte şu semptomları tekrar geliştirdi: {semptom_listesi}. "
+        f"Kronik seyir değerlendirmesi önerilir."
+    )
+
 
 def process(data: dict) -> dict:
     patient_id  = data["patientId"]
-    mood        = data.get("mood", "")
-    summary     = data.get("summary", "")
+    symptoms    = data.get("symptoms", [])
     analyzed_at = data.get("analyzedAt", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
-    keywords = extract_keywords(summary)
+    if not symptoms:
+        logger.info("Semptom listesi boş - Hasta #%s, kayıt yapılmıyor", patient_id)
+        return {"hasWarning": False, "warning": None, "previousDate": None}
+
+    canonical_keys = [s.get("canonicalKey", "") for s in symptoms if s.get("canonicalKey")]
+    logger.info(
+        "İstek alındı - Hasta #%s | %d semptom | Keys: %s",
+        patient_id, len(symptoms), ", ".join(canonical_keys),
+    )
 
     with get_db() as conn:
-        match = find_similar(conn, patient_id, mood, keywords)
+        matches = find_matches(conn, patient_id, canonical_keys)
+        save_symptoms(conn, patient_id, symptoms, analyzed_at)
 
-        # Her durumda yeni kaydı ekle
-        save_record(conn, patient_id, mood, keywords, summary, analyzed_at)
+    if matches:
+        warning = build_warning(matches)
+        previous_date = matches[0]["analyzed_at"]
+        logger.info("Eşleşme bulundu - Hasta #%s → %d semptom geçmişte var", patient_id, len(matches))
+        return {"hasWarning": True, "warning": warning, "previousDate": previous_date}
 
-    if match:
-        date_str = match["analyzed_at"][:10]  # YYYY-MM-DD
-        mood_part = f"Duygu durumu: {match['mood']}." if match["_mood_match"] else ""
-        sim_pct   = int(match["_kw_sim"] * 100)
-        sim_part  = f" Semptom benzerliği: %{sim_pct}." if sim_pct > 0 else ""
-
-        warning = (
-            f"Bu hasta {date_str} tarihinde benzer semptomlar geliştirdi. "
-            f"{mood_part}{sim_part} Lütfen dikkatli takip edin."
-        ).strip()
-
-        logger.info("Uyarı üretildi - Hasta #%s → %s", patient_id, warning)
-        return {"hasWarning": True, "warning": warning, "previousDate": match["analyzed_at"]}
-
-    logger.info("Geçmiş benzer semptom yok - Hasta #%s", patient_id)
+    logger.info("Geçmiş eşleşme yok - Hasta #%s", patient_id)
     return {"hasWarning": False, "warning": None, "previousDate": None}
 
 
 # ── RabbitMQ consumer ────────────────────────────────────────────────────────
 
 def on_message(ch, method, properties, body: bytes) -> None:
+    result = {"hasWarning": False, "warning": None, "previousDate": None}
     try:
-        data = json.loads(body.decode("utf-8"))
-        logger.info("İstek alındı - Hasta #%s", data.get("patientId"))
-
+        data   = json.loads(body.decode("utf-8"))
         result = process(data)
-
-        reply_body = json.dumps(result).encode("utf-8")
-        ch.basic_publish(
-            exchange="",
-            routing_key=properties.reply_to,
-            properties=pika.BasicProperties(
-                correlation_id=properties.correlation_id,
-                content_type="application/json",
-            ),
-            body=reply_body,
-        )
         ch.basic_ack(delivery_tag=method.delivery_tag)
-
     except json.JSONDecodeError as e:
         logger.error("JSON parse hatası: %s", e)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
     except Exception as e:
         logger.error("Beklenmedik hata: %s", e, exc_info=True)
-        # Hata cevabı gönder — .NET timeout almak yerine temiz hata alsın
-        try:
-            error_reply = json.dumps({"hasWarning": False, "warning": None, "previousDate": None}).encode()
-            ch.basic_publish(
-                exchange="",
-                routing_key=properties.reply_to,
-                properties=pika.BasicProperties(
-                    correlation_id=properties.correlation_id,
-                    content_type="application/json",
-                ),
-                body=error_reply,
-            )
-        except Exception:
-            pass
         ch.basic_ack(delivery_tag=method.delivery_tag)
+    finally:
+        # Her durumda yanıt gönder — .NET timeout almasın
+        if properties.reply_to:
+            try:
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=properties.reply_to,
+                    properties=pika.BasicProperties(
+                        correlation_id=properties.correlation_id,
+                        content_type="application/json",
+                    ),
+                    body=json.dumps(result).encode("utf-8"),
+                )
+            except Exception as pub_err:
+                logger.error("Yanıt gönderilemedi: %s", pub_err)
 
 
 def connect_and_consume() -> None:
