@@ -17,7 +17,6 @@ services:
   whisper-worker:
     build:
       context: ./whisper_service
-    pull_policy: never
     container_name: psa-whisper-worker
     restart: unless-stopped
     depends_on:
@@ -29,11 +28,10 @@ services:
       RABBITMQ_USER: guest
       RABBITMQ_PASS: guest
       WHISPER_QUEUE: whisper.requests
-      WHISPER_MODEL: large-v3
+      WHISPER_MODEL: base        # tiny(75MB) | base(145MB) | small(465MB) | large-v3(3GB)
       WHISPER_DEVICE: cpu
       WHISPER_COMPUTE: int8
     volumes:
-      # Modeli host'ta cache'le, image küçük kalsın
       - whisper_models:/root/.cache/huggingface
 
   tts-worker:
@@ -50,9 +48,8 @@ services:
       RABBITMQ_USER: guest
       RABBITMQ_PASS: guest
       TTS_QUEUE: tts.requests
-      TTS_MODEL: tts_models/tr/common-voice/glow-tts
-    volumes:
-      - tts_models:/root/.local/share/tts
+      TTS_LANG: tr               # gTTS dil kodu
+      TTS_SAMPLE_RATE: "22050"
 
   symptom-worker:
     build:
@@ -68,7 +65,6 @@ services:
       RABBITMQ_USER: guest
       RABBITMQ_PASS: guest
       SYMPTOM_QUEUE: symptom.check
-      SIMILARITY_THRESHOLD: "0.25"
       LOOKBACK_DAYS: "0"
     volumes:
       - symptom_data:/data
@@ -99,5 +95,4 @@ services:
 volumes:
   rabbitmq_data:
   whisper_models:
-  tts_models:
   symptom_data:

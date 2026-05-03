@@ -1,24 +1,24 @@
 """
-TTS RabbitMQ Worker
--------------------
+TTS RabbitMQ Worker (gTTS)
+--------------------------
 Listens on `tts.requests` queue. Each message body is JSON: {"text": "..."}.
+Uses gTTS (Google TTS) to generate MP3, converts to WAV via ffmpeg.
 Reply body is raw WAV bytes (audio/wav). On error reply is JSON {"ok": false, "error": "..."}.
 RPC pattern: publishes reply to message.reply_to with same correlation_id.
 """
 
-import io
 import json
-import os
-import time
-import wave
 import logging
+import os
 import signal
+import subprocess
 import sys
+import tempfile
+import time
 
-import numpy as np
 import pika
+from gtts import gTTS
 from pika.adapters.blocking_connection import BlockingChannel
-from TTS.api import TTS as CoquiTTS
 
 from logging_config import setup_logging, log_timing
 
@@ -32,41 +32,53 @@ RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
 TTS_QUEUE     = os.getenv("TTS_QUEUE", "tts.requests")
-
-TTS_MODEL_NAME  = os.getenv("TTS_MODEL", "tts_models/tr/common-voice/glow-tts")
+TTS_LANG      = os.getenv("TTS_LANG", "tr")
 TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", "22050"))
-
-# ── Model (load once at startup) ─────────────────────────────────────────────
-logger.info(f"TTS modeli yükleniyor: {TTS_MODEL_NAME}")
-_t0 = time.perf_counter()
-tts_model: CoquiTTS = CoquiTTS(TTS_MODEL_NAME, progress_bar=False, gpu=False)
-logger.info(f"TTS hazır ({time.perf_counter() - _t0:.2f}s)")
 
 
 @log_timing(logger)
 def synthesize(text: str) -> bytes:
+    """gTTS ile MP3 üret, ffmpeg ile WAV'a dönüştür, bytes döndür."""
     text = (text or "").strip()
     if not text:
         raise ValueError("Metin boş olamaz.")
 
-    samples = tts_model.tts(text=text)
-    samples_int16 = (np.array(samples, dtype=np.float32) * 32767).astype(np.int16)
+    mp3_path = wav_path = None
+    try:
+        # 1. gTTS → MP3
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            mp3_path = f.name
+        gTTS(text=text, lang=TTS_LANG, slow=False).save(mp3_path)
 
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(TTS_SAMPLE_RATE)
-        wf.writeframes(samples_int16.tobytes())
+        # 2. ffmpeg → WAV (mono, 22050 Hz)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", mp3_path,
+                "-ar", str(TTS_SAMPLE_RATE),
+                "-ac", "1",
+                wav_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
 
-    audio_bytes = buf.getvalue()
-    logger.info(f"WAV üretildi: {len(audio_bytes)} byte")
-    return audio_bytes
+        with open(wav_path, "rb") as f:
+            wav_bytes = f.read()
+
+        logger.info(f"WAV üretildi: {len(wav_bytes)} byte")
+        return wav_bytes
+
+    finally:
+        for path in (mp3_path, wav_path):
+            if path and os.path.exists(path):
+                os.unlink(path)
 
 
 def on_message(ch: BlockingChannel, method, properties, body: bytes):
     correlation_id = properties.correlation_id
-    reply_to = properties.reply_to
+    reply_to       = properties.reply_to
 
     logger.info(
         f"Mesaj alındı | size={len(body)} byte | corr_id={correlation_id} | reply_to={reply_to}"
@@ -78,8 +90,8 @@ def on_message(ch: BlockingChannel, method, properties, body: bytes):
         return
 
     try:
-        payload = json.loads(body.decode("utf-8"))
-        text = payload.get("text", "")
+        payload  = json.loads(body.decode("utf-8"))
+        text     = payload.get("text", "")
         wav_bytes = synthesize(text)
 
         ch.basic_publish(
@@ -92,6 +104,7 @@ def on_message(ch: BlockingChannel, method, properties, body: bytes):
             body=wav_bytes,
         )
         logger.info(f"Yanıt gönderildi | corr_id={correlation_id} | size={len(wav_bytes)} byte")
+
     except Exception as ex:
         logger.exception(f"TTS hatası: {ex}")
         error_body = json.dumps({"ok": False, "error": str(ex)}).encode("utf-8")
@@ -113,7 +126,7 @@ def on_message(ch: BlockingChannel, method, properties, body: bytes):
 
 def main():
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-    parameters = pika.ConnectionParameters(
+    parameters  = pika.ConnectionParameters(
         host=RABBITMQ_HOST,
         port=RABBITMQ_PORT,
         credentials=credentials,
@@ -125,14 +138,15 @@ def main():
         try:
             logger.info(f"RabbitMQ'ya bağlanılıyor: {RABBITMQ_HOST}:{RABBITMQ_PORT}")
             connection = pika.BlockingConnection(parameters)
-            channel = connection.channel()
+            channel    = connection.channel()
 
             channel.queue_declare(queue=TTS_QUEUE, durable=False)
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue=TTS_QUEUE, on_message_callback=on_message, auto_ack=False)
 
-            logger.info(f"Kuyruk dinleniyor: {TTS_QUEUE}")
+            logger.info(f"Kuyruk dinleniyor: {TTS_QUEUE} | dil: {TTS_LANG}")
             channel.start_consuming()
+
         except pika.exceptions.AMQPConnectionError as ex:
             logger.warning(f"RabbitMQ bağlantısı koptu, 5s sonra yeniden denenecek: {ex}")
             time.sleep(5)
